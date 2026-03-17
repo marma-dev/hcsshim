@@ -1,6 +1,6 @@
 package etw
 
-// defaultLogSourcesInfo is the native Go representation of the default-logsources.json file.
+// defaultLogSourcesInfo defines the list of trusted ETW providers
 var defaultLogSourcesInfo = LogSourcesInfo{
 	LogConfig: LogConfig{
 		Sources: []Source{

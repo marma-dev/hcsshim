@@ -285,7 +285,7 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 		}
 	}
 
-	if uvm.OS() == "windows" && uvm.forwardLogs {
+	if uvm.OS() == "windows" && uvm.logForwardingEnabled {
 		// If the UVM is Windows and log forwarding is enabled, set the log sources
 		// and start the log forwarding service.
 		if err := uvm.SetLogSources(ctx); err != nil {

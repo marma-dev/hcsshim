@@ -7,55 +7,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Microsoft/go-winio/pkg/guid"
 )
 
-func TestNormalizeGUID(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-		wantErr  bool
-	}{
-		// Valid GUIDs in various formats
-		{"01234567-89ab-cdef-0123-456789abcdef", "01234567-89ab-cdef-0123-456789abcdef", false},
-		{"0123456789abcdef0123456789abcdef", "01234567-89ab-cdef-0123-456789abcdef", false},
-		{"{01234567-89ab-cdef-0123-456789abcdef}", "01234567-89ab-cdef-0123-456789abcdef", false},
-		{"{0123456789abcdef0123456789abcdef}", "01234567-89ab-cdef-0123-456789abcdef", false},
-		{"01234567-89AB-CDEF-0123-456789ABCDEF", "01234567-89ab-cdef-0123-456789abcdef", false},
-		{"{01234567-89AB-CDEF-0123-456789ABCDEF}", "01234567-89ab-cdef-0123-456789abcdef", false},
-		// Invalid GUIDs
-		{"", "", true},
-		{"01234567-89ab-cdef-0123-456789abcde", "", true},    // too short
-		{"01234567-89ab-cdef-0123-456789abcdef0", "", true},  // too long
-		{"01234567-89ab-cdef-0123-456789abcdeg", "", true},   // non-hex char
-		{"{01234567-89ab-cdef-0123-456789abcdeg}", "", true}, // non-hex char with braces
-		{"01234567-89ab-cdef-0123-456789abcde-", "", true},   // trailing dash
-	}
-
-	for _, tt := range tests {
-		got, err := normalizeGUID(tt.input)
-		if tt.wantErr {
-			if err == nil {
-				t.Errorf("normalizeGUID(%q) expected error, got none", tt.input)
-			}
-		} else {
-			if err != nil {
-				t.Errorf("normalizeGUID(%q) unexpected error: %v", tt.input, err)
-			}
-			if got != tt.expected {
-				t.Errorf("normalizeGUID(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		}
-	}
-}
-
 func TestGetProviderGUIDFromName(t *testing.T) {
-	// These names should be present in the etwNameToGuidMap for the tests to pass.
+	// These names should be present in the etwNameToGUIDMap for the tests to pass.
 	tests := []struct {
 		name     string
 		expected string
 	}{
-		{"Microsoft.Windows.HyperV.Compute", etwNameToGuidMap["microsoft.windows.hyperv.compute"]},
-		{"Microsoft.Windows.Containers.Setup", etwNameToGuidMap["microsoft.windows.containers.setup"]},
+		{"Microsoft.Windows.HyperV.Compute", etwNameToGUIDMap["microsoft.windows.hyperv.compute"]},
+		{"Microsoft.Windows.Containers.Setup", etwNameToGUIDMap["microsoft.windows.containers.setup"]},
 		{"nonexistent.provider", ""},
 		{"", ""},
 	}
@@ -212,11 +175,11 @@ func applyExpectedGUIDBehavior(cfg *LogSourcesInfo, includeGUIDs bool) {
 		for j, provider := range src.Providers {
 			if includeGUIDs {
 				if provider.ProviderGUID != "" {
-					guid, err := normalizeGUID(provider.ProviderGUID)
+					guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
 					if err != nil {
 						cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = ""
 					} else {
-						cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = guid
+						cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
 					}
 				}
 				if provider.ProviderName != "" && provider.ProviderGUID == "" {
@@ -226,14 +189,14 @@ func applyExpectedGUIDBehavior(cfg *LogSourcesInfo, includeGUIDs bool) {
 			}
 
 			if provider.ProviderName != "" && provider.ProviderGUID != "" {
-				guid, err := normalizeGUID(provider.ProviderGUID)
+				guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
 				if err != nil {
 					continue
 				}
-				if strings.EqualFold(guid, getProviderGUIDFromName(provider.ProviderName)) {
+				if strings.EqualFold(guid.String(), getProviderGUIDFromName(provider.ProviderName)) {
 					cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = ""
 				} else {
-					cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = guid
+					cfg.LogConfig.Sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
 				}
 			}
 		}

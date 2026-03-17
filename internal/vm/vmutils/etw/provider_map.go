@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 
+	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/log"
 )
 
@@ -31,36 +31,6 @@ type EtwProvider struct {
 	Keywords     string `json:"keywords,omitempty"`
 }
 
-// NormalizeGUID takes a GUID string in various formats and normalizes it to the standard 8-4-4-4-12 format with uppercase letters. It returns an error if the input string is not a valid GUID.
-func normalizeGUID(in string) (string, error) {
-	s := strings.TrimSpace(in)
-	s = strings.TrimPrefix(s, "{")
-	s = strings.TrimSuffix(s, "}")
-	s = strings.TrimSpace(s)
-
-	compact := strings.ReplaceAll(s, "-", "")
-	if len(compact) != 32 {
-		return "", fmt.Errorf("GUID %q has invalid length after normalization (%d, want 32 hex chars)", in, len(compact))
-	}
-
-	for i := 0; i < len(compact); i++ {
-		c := compact[i]
-		isHex := (c >= '0' && c <= '9') ||
-			(c >= 'a' && c <= 'f') ||
-			(c >= 'A' && c <= 'F')
-		if !isHex {
-			return "", fmt.Errorf("GUID %q contains non-hex character %q", in, c)
-		}
-	}
-
-	compact = strings.ToLower(compact)
-	return compact[0:8] + "-" +
-		compact[8:12] + "-" +
-		compact[12:16] + "-" +
-		compact[16:20] + "-" +
-		compact[20:32], nil
-}
-
 // GetDefaultLogSources returns the default log sources configuration.
 func GetDefaultLogSources() LogSourcesInfo {
 	return defaultLogSourcesInfo
@@ -68,13 +38,155 @@ func GetDefaultLogSources() LogSourcesInfo {
 
 // GetProviderGUIDFromName returns the provider GUID for a given provider name. If the provider name is not found in the map, it returns an empty string.
 func getProviderGUIDFromName(providerName string) string {
-	if guid, ok := etwNameToGuidMap[strings.ToLower(providerName)]; ok {
+	if guid, ok := etwNameToGUIDMap[strings.ToLower(providerName)]; ok {
 		return guid
 	}
 	return ""
 }
 
-// UpdateLogSources updates the user provided log sources with the default log sources based on the configuration and returns the updated log sources as a base64 encoded JSON string.
+// providerKey returns a unique key for an EtwProvider, used for deduplication during merge.
+// If both Name and GUID are present, key is "Name|GUID". If only GUID, key is GUID. Otherwise, key is Name.
+func providerKey(provider EtwProvider) string {
+	if provider.ProviderGUID != "" {
+		if provider.ProviderName != "" {
+			return provider.ProviderName + "|" + provider.ProviderGUID
+		}
+		return provider.ProviderGUID
+	}
+	return provider.ProviderName
+}
+
+// mergeProviders merges two slices of EtwProvider, with userProviders taking precedence over defaultProviders
+// on key conflicts (same name, same GUID, or same name|GUID combination).
+func mergeProviders(defaultProviders, userProviders []EtwProvider) []EtwProvider {
+	providerMap := make(map[string]EtwProvider)
+	for _, provider := range defaultProviders {
+		providerMap[providerKey(provider)] = provider
+	}
+	for _, provider := range userProviders {
+		providerMap[providerKey(provider)] = provider
+	}
+
+	merged := make([]EtwProvider, 0, len(providerMap))
+	for _, provider := range providerMap {
+		merged = append(merged, provider)
+	}
+	return merged
+}
+
+// mergeLogSources merges userSources into resultSources. Sources with matching types have their
+// providers merged; unmatched user sources are appended as new entries.
+func mergeLogSources(resultSources []Source, userSources []Source) []Source {
+	for _, userSrc := range userSources {
+		merged := false
+		for i, resSrc := range resultSources {
+			if userSrc.Type == resSrc.Type {
+				resultSources[i].Providers = mergeProviders(resSrc.Providers, userSrc.Providers)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			resultSources = append(resultSources, userSrc)
+		}
+	}
+	return resultSources
+}
+
+// decodeAndUnmarshalLogSources decodes a base64-encoded JSON string and unmarshals it into a LogSourcesInfo.
+func decodeAndUnmarshalLogSources(ctx context.Context, base64EncodedJSONLogConfig string) (LogSourcesInfo, error) {
+	jsonBytes, err := base64.StdEncoding.DecodeString(base64EncodedJSONLogConfig)
+	if err != nil {
+		log.G(ctx).Errorf("Error decoding base64 log config: %v", err)
+		return LogSourcesInfo{}, err
+	}
+
+	var userLogSources LogSourcesInfo
+	if err := json.Unmarshal(jsonBytes, &userLogSources); err != nil {
+		log.G(ctx).Errorf("Error unmarshalling user log config: %v", err)
+		return LogSourcesInfo{}, err
+	}
+	return userLogSources, nil
+}
+
+func trimGUID(in string) string {
+	s := strings.TrimSpace(in)
+	s = strings.TrimPrefix(s, "{")
+	s = strings.TrimSuffix(s, "}")
+	s = strings.TrimSpace(s)
+	return s
+}
+
+// resolveGUIDsWithLookup normalizes and fills in provider GUIDs from the well-known ETW map
+// for all providers across all sources. Providers with an invalid GUID are warned and skipped.
+func resolveGUIDsWithLookup(ctx context.Context, sources []Source) []Source {
+	for i, src := range sources {
+		for j, provider := range src.Providers {
+			if provider.ProviderGUID != "" {
+				guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
+				if err != nil {
+					log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
+					continue
+				}
+				sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
+			}
+			if provider.ProviderName != "" && provider.ProviderGUID == "" {
+				sources[i].Providers[j].ProviderGUID = getProviderGUIDFromName(provider.ProviderName)
+			}
+		}
+	}
+	return sources
+}
+
+// stripRedundantGUIDs removes the GUID from providers where both Name and GUID are present and
+// the GUID matches the well-known lookup by name. This ensures sidecar-GCS prefers name-based
+// policy verification. Invalid GUIDs are warned and left as-is after normalization.
+func stripRedundantGUIDs(ctx context.Context, sources []Source) []Source {
+	for i, src := range sources {
+		for j, provider := range src.Providers {
+			if provider.ProviderName == "" || provider.ProviderGUID == "" {
+				continue
+			}
+			guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
+			if err != nil {
+				log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
+				continue
+			}
+			if strings.EqualFold(guid.String(), getProviderGUIDFromName(provider.ProviderName)) {
+				sources[i].Providers[j].ProviderGUID = ""
+			} else {
+				sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
+			}
+		}
+	}
+	return sources
+}
+
+// applyGUIDPolicy applies GUID resolution or stripping to all sources depending on the includeGUIDs flag.
+// See resolveGUIDsWithLookup and stripRedundantGUIDs for the respective behaviors.
+func applyGUIDPolicy(ctx context.Context, sources []Source, includeGUIDs bool) []Source {
+	if len(sources) == 0 {
+		return sources
+	}
+	if includeGUIDs {
+		return resolveGUIDsWithLookup(ctx, sources)
+	}
+	return stripRedundantGUIDs(ctx, sources)
+}
+
+// marshalAndEncodeLogSources marshals the given LogSourcesInfo to JSON and encodes it as a base64 string.
+// On error, it logs and returns the original fallback string.
+func marshalAndEncodeLogSources(ctx context.Context, logCfg LogSourcesInfo, fallback string) (string, error) {
+	jsonBytes, err := json.Marshal(logCfg)
+	if err != nil {
+		log.G(ctx).Errorf("Error marshalling log config: %v", err)
+		return fallback, err
+	}
+	return base64.StdEncoding.EncodeToString(jsonBytes), nil
+}
+
+// UpdateLogSources updates the user provided log sources with the default log sources based on the
+// configuration and returns the updated log sources as a base64 encoded JSON string.
 // If there is an error in the process, it returns the original user provided log sources string.
 func UpdateLogSources(ctx context.Context, base64EncodedJSONLogConfig string, useDefaultLogSources bool, includeGUIDs bool) string {
 	var resultLogCfg LogSourcesInfo
@@ -83,111 +195,17 @@ func UpdateLogSources(ctx context.Context, base64EncodedJSONLogConfig string, us
 	}
 
 	if base64EncodedJSONLogConfig != "" {
-		jsonBytes, err := base64.StdEncoding.DecodeString(base64EncodedJSONLogConfig)
-		if err != nil {
-			log.G(ctx).Errorf("Error decoding base64 log config: %v", err)
-		} else {
-			var userLogSources LogSourcesInfo
-			if err := json.Unmarshal(jsonBytes, &userLogSources); err != nil {
-				log.G(ctx).Errorf("Error unmarshalling user log config: %v", err)
-			} else {
-				// Merge user log sources with default log sources based on the type. If the type matches,
-				// we merge the providers. If there is a conflict in providers, we append them.
-				// If the type does not match, we add the user log source as a new source.
-				for _, userSrc := range userLogSources.LogConfig.Sources {
-					found := false
-					for i, defSrc := range resultLogCfg.LogConfig.Sources {
-						if userSrc.Type == defSrc.Type {
-							found = true
-							// Merge providers
-							providerMap := make(map[string]EtwProvider)
-							for _, provider := range defSrc.Providers {
-								key := provider.ProviderName
-								if provider.ProviderGUID != "" {
-									if key != "" {
-										key = provider.ProviderName + "|" + provider.ProviderGUID
-									} else {
-										key = provider.ProviderGUID
-									}
-								}
-								providerMap[key] = provider
-							}
-							for _, provider := range userSrc.Providers {
-								key := provider.ProviderName
-								if provider.ProviderGUID != "" {
-									if key != "" {
-										key = provider.ProviderName + "|" + provider.ProviderGUID
-									} else {
-										key = provider.ProviderGUID
-									}
-								}
-								providerMap[key] = provider
-							}
-							etwProviders := make([]EtwProvider, 0, len(providerMap))
-							for _, provider := range providerMap {
-								etwProviders = append(etwProviders, provider)
-							}
-							resultLogCfg.LogConfig.Sources[i].Providers = etwProviders
-							break
-						}
-					}
-					if !found {
-						resultLogCfg.LogConfig.Sources = append(resultLogCfg.LogConfig.Sources, userSrc)
-					}
-				}
-			}
+		userLogSources, err := decodeAndUnmarshalLogSources(ctx, base64EncodedJSONLogConfig)
+		if err == nil {
+			resultLogCfg.LogConfig.Sources = mergeLogSources(resultLogCfg.LogConfig.Sources, userLogSources.LogConfig.Sources)
 		}
 	}
 
-	// Append GUIDs to the providers if includeGUIDs is true. We get the GUIDs from the ETW map based on the provider names.
-	// If a provider does not have a name and only has a GUID, we keep it as is.
-	if len(resultLogCfg.LogConfig.Sources) > 0 {
-		if includeGUIDs {
-			for i, src := range resultLogCfg.LogConfig.Sources {
-				for j, provider := range src.Providers {
-					if provider.ProviderGUID != "" {
-						guid, err := normalizeGUID(provider.ProviderGUID)
-						if err != nil {
-							log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
-						}
-						resultLogCfg.LogConfig.Sources[i].Providers[j].ProviderGUID = guid
-					}
-					if provider.ProviderName != "" && provider.ProviderGUID == "" {
-						resultLogCfg.LogConfig.Sources[i].Providers[j].ProviderGUID = getProviderGUIDFromName(provider.ProviderName)
-					}
-				}
-			}
-		} else {
-			// If includeGUIDs is false, we still want to include GUIDs if that is the only identity present for a provider.
-			// Only when both Name and GUID is provided for a ETW provider, we check if the provided GUID is valid and remove
-			// it if we can fetch the same from our well known list of guids by using the name. This is because the sidecar-GCS
-			// prefers verification of log providers by name against the policy.
-			for i, src := range resultLogCfg.LogConfig.Sources {
-				for j, provider := range src.Providers {
-					if provider.ProviderName != "" && provider.ProviderGUID != "" {
-						guid, err := normalizeGUID(provider.ProviderGUID)
-						if err != nil {
-							log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
-							continue
-						}
-						if strings.EqualFold(guid, getProviderGUIDFromName(provider.ProviderName)) {
-							resultLogCfg.LogConfig.Sources[i].Providers[j].ProviderGUID = ""
-						} else {
-							resultLogCfg.LogConfig.Sources[i].Providers[j].ProviderGUID = guid
-						}
-					}
-				}
-			}
-		}
+	resultLogCfg.LogConfig.Sources = applyGUIDPolicy(ctx, resultLogCfg.LogConfig.Sources, includeGUIDs)
 
-	}
-
-	jsonBytes, err := json.Marshal(resultLogCfg)
+	result, err := marshalAndEncodeLogSources(ctx, resultLogCfg, base64EncodedJSONLogConfig)
 	if err != nil {
-		log.G(ctx).Errorf("Error marshalling log config: %v", err)
 		return base64EncodedJSONLogConfig
 	}
-
-	encodedCfg := base64.StdEncoding.EncodeToString(jsonBytes)
-	return encodedCfg
+	return result
 }

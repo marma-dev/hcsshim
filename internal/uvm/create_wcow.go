@@ -72,8 +72,8 @@ type OptionsWCOW struct {
 
 	OutputHandlerCreator     vmutils.OutputHandlerCreator // Creates an [OutputHandler] that controls how output received over HVSocket from the UVM is handled. Defaults to parsing output as ETW Log events
 	LogSources               string                       // ETW providers to be set for the logging service
-	DisableLogForwarding     bool                         // Whether to disable forwarding of logs to the host or not
-	DisableDefaultLogSources bool                         // Whether to disable using default log sources
+	LogForwardingEnabled     bool                         // Whether to enable forwarding of logs to the host or not
+	DefaultLogSourcesEnabled bool                         // Whether to enable using default log sources
 }
 
 func defaultConfidentialWCOWOSBootFilesPath() string {
@@ -113,8 +113,8 @@ func NewDefaultOptionsWCOW(id, owner string) *OptionsWCOW {
 			},
 		},
 		OutputHandlerCreator:     vmutils.ParseGCSLogrus,
-		DisableLogForwarding:     false, // Default to true for WCOW, and set to false for CWCOW in internal/oci/uvm.go SpecToUVMCreateOpts
-		DisableDefaultLogSources: false,
+		LogForwardingEnabled:     true, // Default to true for WCOW, and set to false for CWCOW in internal/oci/uvm.go SpecToUVMCreateOpts
+		DefaultLogSourcesEnabled: true,
 		LogSources:               "",
 	}
 }
@@ -293,7 +293,7 @@ func prepareCommonConfigDoc(ctx context.Context, uvm *UtilityVM, opts *OptionsWC
 	}
 
 	maps.Copy(doc.VirtualMachine.Devices.HvSocket.HvSocketConfig.ServiceTable, opts.AdditionalHyperVConfig)
-	if !opts.DisableLogForwarding {
+	if opts.LogForwardingEnabled {
 		key := prot.WindowsLoggingHvsockServiceID.String()
 		doc.VirtualMachine.Devices.HvSocket.HvSocketConfig.ServiceTable[key] = hcsschema.HvSocketServiceConfig{
 			AllowWildcardBinds:        true,
@@ -579,8 +579,8 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		createOpts:               opts,
 		blockCIMMounts:           make(map[string]*UVMMountedBlockCIMs),
 		logSources:               opts.LogSources,
-		forwardLogs:              !opts.DisableLogForwarding,
-		disableDefaultLogSources: opts.DisableDefaultLogSources,
+		logForwardingEnabled:     opts.LogForwardingEnabled,
+		defaultLogSourcesEnabled: opts.DefaultLogSourcesEnabled,
 	}
 
 	defer func() {
@@ -620,7 +620,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		return nil, fmt.Errorf("error while creating the compute system: %w", err)
 	}
 
-	if !opts.DisableLogForwarding {
+	if opts.LogForwardingEnabled {
 		// Create a socket that the executed program can send to. This is usually
 		// used by Log Forward Service to send log data.
 		uvm.outputHandler = opts.OutputHandlerCreator(opts.ID)

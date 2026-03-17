@@ -6,12 +6,12 @@ import (
 )
 
 func TestDefaultSources_ETWProvidersExistInETWMap(t *testing.T) {
-	if len(etwNameToGuidMap) == 0 {
-		t.Fatal("etwNameToGuidMap is empty")
+	if len(etwNameToGUIDMap) == 0 {
+		t.Fatal("etwNameToGUIDMap is empty")
 	}
 
 	for si, src := range defaultLogSourcesInfo.LogConfig.Sources {
-		// Only ETW sources should be validated against etwNameToGuidMap.
+		// Only ETW sources should be validated against etwNameToGUIDMap.
 		if !strings.EqualFold(src.Type, "ETW") {
 			continue
 		}
@@ -22,9 +22,9 @@ func TestDefaultSources_ETWProvidersExistInETWMap(t *testing.T) {
 			}
 
 			key := strings.ToLower(p.ProviderName)
-			if _, ok := etwNameToGuidMap[key]; !ok {
+			if _, ok := etwNameToGUIDMap[key]; !ok {
 				t.Fatalf(
-					"provider not found in etwNameToGuidMap: source index=%d provider index=%d provider=%q lookup key=%q",
+					"provider not found in etwNameToGUIDMap: source index=%d provider index=%d provider=%q lookup key=%q",
 					si, pi, p.ProviderName, key,
 				)
 			}

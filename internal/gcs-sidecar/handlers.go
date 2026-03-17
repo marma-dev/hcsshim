@@ -500,7 +500,7 @@ func (b *Bridge) modifyServiceSettings(req *request) (err error) {
 	// Todo: Add policy enforcement for modifying service settings
 	modifyRequest, err := unmarshalModifyServiceSettings(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal modifyServiceSettings request: %w", err)
 	}
 
 	switch modifyRequest.PropertyType {

@@ -470,11 +470,11 @@ const (
 	// 		"eyJsb2dDb25maWciOnsic291cmNlcyI6W3sidHlwZSI6IkVUVyIsInByb3ZpZGVycyI6W3sicHJvdmlkZXJHdWlkIjoiODBDRTUwREUtRDI2NC00NTgxLTk1MEQtQUJBREVFRTBEMzQwIiwicHJvdmlkZXJOYW1lIjoiTWljcm9zb2Z0LldpbmRvd3MuSHlwZXJWLkNvbXB1dGUiLCJsZXZlbCI6IkluZm9ybWF0aW9uIn1dfV19fQ=="
 	LogSources = "io.microsoft.virtualmachine.forwardlogs.sources"
 
-	// Specifies whether to disable forwarding logs to the host or not. Defaults to false for (non-confidential) WCOW, meaning logs will be forwarded to the host if LogSources is set. And true for confidential containers, meaning logs will not be forwarded to the host by default.
-	DisableForwardLogs = "io.microsoft.virtualmachine.forwardlogs.disable"
+	// Specifies whether to enable forwarding logs to the host or not. Defaults to false for (non-confidential) WCOW, meaning logs will be forwarded to the host if LogSources is set. And true for confidential containers, meaning logs will not be forwarded to the host by default.
+	LogForwardingEnabled = "io.microsoft.virtualmachine.forwardlogs.enable"
 
-	// Specifies whether to disable default providers or not. Defaults to true.
-	DisableDefaultLogSources = "io.microsoft.virtualmachine.forwardlogs.defaultsources.disable"
+	// Specifies whether to enable default providers or not. Defaults to true.
+	DefaultLogSourcesEnabled = "io.microsoft.virtualmachine.forwardlogs.defaultsources.enable"
 )
 
 // LCOW uVM annotations.

@@ -69,7 +69,7 @@ func (uvm *UtilityVM) SetLogSources(ctx context.Context) error {
 		// For confidential WCOw, we skip the adding guids to the log sources as the sidecar-GCS will verify the
 		// allowed log sources against policy and append the necessary GUIDs to the ones allowed. Rest are dropped.
 		// For non-confidential WCOW, we include the GUIDs in the log sources as the hcsshim communicates directly with the inboxGCS.
-		settings := etw.UpdateLogSources(ctx, uvm.logSources, !uvm.disableDefaultLogSources, !uvm.HasConfidentialPolicy())
+		settings := etw.UpdateLogSources(ctx, uvm.logSources, uvm.defaultLogSourcesEnabled, !uvm.HasConfidentialPolicy())
 
 		req := guestrequest.LogForwardServiceRPCRequest{
 			RPCType:  guestrequest.RPCModifyServiceSettings,

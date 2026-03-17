@@ -1,7 +1,7 @@
 package etw
 
 // LOWERCASE ONLY keys for easier lookups and case-insensitive matching.
-var etwNameToGuidMap = map[string]string{
+var etwNameToGUIDMap = map[string]string{
 	"microsoft.windows.containers.setup":                                         "22267b1c-b979-5c81-9e24-0db386a62dd1",
 	"microsoft.windows.containers.storage":                                       "2551390d-5927-5c84-6f0a-027a7e78d38d",
 	"microsoft.windows.containers.library":                                       "67eb0417-9297-42ae-a1d9-98bfeb359059",

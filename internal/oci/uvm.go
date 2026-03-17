@@ -419,13 +419,13 @@ func SpecToUVMCreateOpts(ctx context.Context, s *specs.Spec, id, owner string) (
 		if err := handleWCOWSecurityPolicy(ctx, s.Annotations, wopts); err != nil {
 			return nil, err
 		}
-		// If security policy is enable, wopts.DisableLogForwarding default value should be true (CWCOW should not allow log forwarding by default)
+		// If security policy is enable, wopts.LogForwardingEnabled default value should be false (CWCOW should not allow log forwarding by default)
 		if wopts.SecurityPolicyEnabled {
-			wopts.DisableLogForwarding = true
+			wopts.LogForwardingEnabled = false
 		}
 		wopts.LogSources = ParseAnnotationsString(s.Annotations, annotations.LogSources, wopts.LogSources)
-		wopts.DisableLogForwarding = ParseAnnotationsBool(ctx, s.Annotations, annotations.DisableForwardLogs, wopts.DisableLogForwarding)
-		wopts.DisableDefaultLogSources = ParseAnnotationsBool(ctx, s.Annotations, annotations.DisableDefaultLogSources, wopts.DisableDefaultLogSources)
+		wopts.LogForwardingEnabled = ParseAnnotationsBool(ctx, s.Annotations, annotations.LogForwardingEnabled, wopts.LogForwardingEnabled)
+		wopts.DefaultLogSourcesEnabled = ParseAnnotationsBool(ctx, s.Annotations, annotations.DefaultLogSourcesEnabled, wopts.DefaultLogSourcesEnabled)
 
 		return wopts, nil
 	}
