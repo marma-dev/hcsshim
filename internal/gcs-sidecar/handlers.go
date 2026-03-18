@@ -526,7 +526,10 @@ func (b *Bridge) modifyServiceSettings(req *request) (err error) {
 					log.G(req.ctx).Tracef("Allowed log sources after policy enforcement: %v", allowedLogSources)
 
 					// Update the allowed log sources in the settings. This will be forwarded to inbox GCS which expects the log sources in a JSON string format with GUIDs for providers included.
-					allowedLogSources = etw.UpdateLogSources(req.ctx, allowedLogSources, false, true)
+					allowedLogSources, err := etw.UpdateLogSources(allowedLogSources, false, true)
+					if err != nil {
+						return fmt.Errorf("failed to update log sources: %w", err)
+					}
 					settings.Settings = allowedLogSources
 				}
 			default:

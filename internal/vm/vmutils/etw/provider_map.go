@@ -1,13 +1,12 @@
 package etw
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
-	"github.com/Microsoft/hcsshim/internal/log"
 )
 
 // Log Sources JSON structure
@@ -94,17 +93,15 @@ func mergeLogSources(resultSources []Source, userSources []Source) []Source {
 }
 
 // decodeAndUnmarshalLogSources decodes a base64-encoded JSON string and unmarshals it into a LogSourcesInfo.
-func decodeAndUnmarshalLogSources(ctx context.Context, base64EncodedJSONLogConfig string) (LogSourcesInfo, error) {
+func decodeAndUnmarshalLogSources(base64EncodedJSONLogConfig string) (LogSourcesInfo, error) {
 	jsonBytes, err := base64.StdEncoding.DecodeString(base64EncodedJSONLogConfig)
 	if err != nil {
-		log.G(ctx).Errorf("Error decoding base64 log config: %v", err)
-		return LogSourcesInfo{}, err
+		return LogSourcesInfo{}, fmt.Errorf("error decoding base64 log config: %w", err)
 	}
 
 	var userLogSources LogSourcesInfo
 	if err := json.Unmarshal(jsonBytes, &userLogSources); err != nil {
-		log.G(ctx).Errorf("Error unmarshalling user log config: %v", err)
-		return LogSourcesInfo{}, err
+		return LogSourcesInfo{}, fmt.Errorf("error unmarshalling user log config: %w", err)
 	}
 	return userLogSources, nil
 }
@@ -119,14 +116,13 @@ func trimGUID(in string) string {
 
 // resolveGUIDsWithLookup normalizes and fills in provider GUIDs from the well-known ETW map
 // for all providers across all sources. Providers with an invalid GUID are warned and skipped.
-func resolveGUIDsWithLookup(ctx context.Context, sources []Source) []Source {
+func resolveGUIDsWithLookup(sources []Source) ([]Source, error) {
 	for i, src := range sources {
 		for j, provider := range src.Providers {
 			if provider.ProviderGUID != "" {
 				guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
 				if err != nil {
-					log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
-					continue
+					return nil, fmt.Errorf("invalid GUID %q for provider %q: %w", provider.ProviderGUID, provider.ProviderName, err)
 				}
 				sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
 			}
@@ -135,13 +131,13 @@ func resolveGUIDsWithLookup(ctx context.Context, sources []Source) []Source {
 			}
 		}
 	}
-	return sources
+	return sources, nil
 }
 
 // stripRedundantGUIDs removes the GUID from providers where both Name and GUID are present and
 // the GUID matches the well-known lookup by name. This ensures sidecar-GCS prefers name-based
-// policy verification. Invalid GUIDs are warned and left as-is after normalization.
-func stripRedundantGUIDs(ctx context.Context, sources []Source) []Source {
+// policy verification. Invalid GUIDs are errored out.
+func stripRedundantGUIDs(sources []Source) ([]Source, error) {
 	for i, src := range sources {
 		for j, provider := range src.Providers {
 			if provider.ProviderName == "" || provider.ProviderGUID == "" {
@@ -149,38 +145,41 @@ func stripRedundantGUIDs(ctx context.Context, sources []Source) []Source {
 			}
 			guid, err := guid.FromString(trimGUID(provider.ProviderGUID))
 			if err != nil {
-				log.G(ctx).Warningf("Skipping invalid GUID %q for provider %q: %v", provider.ProviderGUID, provider.ProviderName, err)
-				continue
+				return nil, fmt.Errorf("invalid GUID %q for provider %q: %w", provider.ProviderGUID, provider.ProviderName, err)
 			}
 			if strings.EqualFold(guid.String(), getProviderGUIDFromName(provider.ProviderName)) {
 				sources[i].Providers[j].ProviderGUID = ""
 			} else {
+				// If the GUID doesn't match the well-known GUID for the provider name,
+				// we keep it but ensure it's normalized to lowercase without braces.
+				// However, we remove the provider name to avoid incorrect policy matches
+				// in sidecar-GCS, since the GUID is the source of truth in this case.
+				sources[i].Providers[j].ProviderName = ""
 				sources[i].Providers[j].ProviderGUID = strings.ToLower(guid.String())
 			}
 		}
 	}
-	return sources
+	return sources, nil
 }
 
 // applyGUIDPolicy applies GUID resolution or stripping to all sources depending on the includeGUIDs flag.
 // See resolveGUIDsWithLookup and stripRedundantGUIDs for the respective behaviors.
-func applyGUIDPolicy(ctx context.Context, sources []Source, includeGUIDs bool) []Source {
+func applyGUIDPolicy(sources []Source, includeGUIDs bool) ([]Source, error) {
 	if len(sources) == 0 {
-		return sources
+		return sources, nil
 	}
 	if includeGUIDs {
-		return resolveGUIDsWithLookup(ctx, sources)
+		return resolveGUIDsWithLookup(sources)
 	}
-	return stripRedundantGUIDs(ctx, sources)
+	return stripRedundantGUIDs(sources)
 }
 
 // marshalAndEncodeLogSources marshals the given LogSourcesInfo to JSON and encodes it as a base64 string.
 // On error, it logs and returns the original fallback string.
-func marshalAndEncodeLogSources(ctx context.Context, logCfg LogSourcesInfo, fallback string) (string, error) {
+func marshalAndEncodeLogSources(logCfg LogSourcesInfo) (string, error) {
 	jsonBytes, err := json.Marshal(logCfg)
 	if err != nil {
-		log.G(ctx).Errorf("Error marshalling log config: %v", err)
-		return fallback, err
+		return "", fmt.Errorf("error marshalling log config: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(jsonBytes), nil
 }
@@ -188,24 +187,30 @@ func marshalAndEncodeLogSources(ctx context.Context, logCfg LogSourcesInfo, fall
 // UpdateLogSources updates the user provided log sources with the default log sources based on the
 // configuration and returns the updated log sources as a base64 encoded JSON string.
 // If there is an error in the process, it returns the original user provided log sources string.
-func UpdateLogSources(ctx context.Context, base64EncodedJSONLogConfig string, useDefaultLogSources bool, includeGUIDs bool) string {
+func UpdateLogSources(base64EncodedJSONLogConfig string, useDefaultLogSources bool, includeGUIDs bool) (string, error) {
 	var resultLogCfg LogSourcesInfo
 	if useDefaultLogSources {
 		resultLogCfg = defaultLogSourcesInfo
 	}
 
 	if base64EncodedJSONLogConfig != "" {
-		userLogSources, err := decodeAndUnmarshalLogSources(ctx, base64EncodedJSONLogConfig)
-		if err == nil {
-			resultLogCfg.LogConfig.Sources = mergeLogSources(resultLogCfg.LogConfig.Sources, userLogSources.LogConfig.Sources)
+		userLogSources, err := decodeAndUnmarshalLogSources(base64EncodedJSONLogConfig)
+		if err != nil {
+			return "", fmt.Errorf("failed to decode and unmarshal user log sources: %w", err)
 		}
+		resultLogCfg.LogConfig.Sources = mergeLogSources(resultLogCfg.LogConfig.Sources, userLogSources.LogConfig.Sources)
+
 	}
 
-	resultLogCfg.LogConfig.Sources = applyGUIDPolicy(ctx, resultLogCfg.LogConfig.Sources, includeGUIDs)
-
-	result, err := marshalAndEncodeLogSources(ctx, resultLogCfg, base64EncodedJSONLogConfig)
+	var err error
+	resultLogCfg.LogConfig.Sources, err = applyGUIDPolicy(resultLogCfg.LogConfig.Sources, includeGUIDs)
 	if err != nil {
-		return base64EncodedJSONLogConfig
+		return "", fmt.Errorf("failed to apply GUID policy: %w", err)
 	}
-	return result
+
+	result, err := marshalAndEncodeLogSources(resultLogCfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal and encode log sources: %w", err)
+	}
+	return result, nil
 }

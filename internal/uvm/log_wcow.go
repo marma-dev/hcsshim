@@ -4,6 +4,7 @@ package uvm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Microsoft/hcsshim/internal/gcs"
 	"github.com/Microsoft/hcsshim/internal/gcs/prot"
@@ -69,15 +70,17 @@ func (uvm *UtilityVM) SetLogSources(ctx context.Context) error {
 		// For confidential WCOw, we skip the adding guids to the log sources as the sidecar-GCS will verify the
 		// allowed log sources against policy and append the necessary GUIDs to the ones allowed. Rest are dropped.
 		// For non-confidential WCOW, we include the GUIDs in the log sources as the hcsshim communicates directly with the inboxGCS.
-		settings := etw.UpdateLogSources(ctx, uvm.logSources, uvm.defaultLogSourcesEnabled, !uvm.HasConfidentialPolicy())
-
+		settings, err := etw.UpdateLogSources(uvm.logSources, uvm.defaultLogSourcesEnabled, !uvm.HasConfidentialPolicy())
+		if err != nil {
+			return fmt.Errorf("failed to parse log sources: %w", err)
+		}
 		req := guestrequest.LogForwardServiceRPCRequest{
 			RPCType:  guestrequest.RPCModifyServiceSettings,
 			Settings: settings,
 		}
-		err := uvm.gc.ModifyServiceSettings(ctx, prot.LogForwardService, req)
+		err = uvm.gc.ModifyServiceSettings(ctx, prot.LogForwardService, req)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to modify service settings: %w", err)
 		}
 	}
 	return nil

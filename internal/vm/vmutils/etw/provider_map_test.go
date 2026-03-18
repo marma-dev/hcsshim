@@ -1,7 +1,6 @@
 package etw
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -108,7 +107,10 @@ func TestUpdateLogSources_Combinations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			defaultLogSourcesInfo = cloneLogSourcesInfo(originalDefaults)
 
-			gotEncoded := UpdateLogSources(context.Background(), tt.base64Input, tt.useDefault, tt.includeGUIDs)
+			gotEncoded, err := UpdateLogSources(tt.base64Input, tt.useDefault, tt.includeGUIDs)
+			if err != nil {
+				t.Fatalf("UpdateLogSources returned error: %v", err)
+			}
 			got := mustDecodeLogSources(t, gotEncoded)
 
 			if !reflect.DeepEqual(got, tt.expectedLogCfg) {
@@ -242,4 +244,186 @@ func mustDecodeLogSources(t *testing.T, encoded string) LogSourcesInfo {
 		t.Fatalf("failed to unmarshal log sources: %v", err)
 	}
 	return cfg
+}
+
+func TestUpdateLogSources_ErrorCases(t *testing.T) {
+	originalDefaults := cloneLogSourcesInfo(defaultLogSourcesInfo)
+	t.Cleanup(func() {
+		defaultLogSourcesInfo = cloneLogSourcesInfo(originalDefaults)
+	})
+
+	// Build a config with an invalid GUID to trigger applyGUIDPolicy errors.
+	invalidGUIDConfig := LogSourcesInfo{
+		LogConfig: LogConfig{
+			Sources: []Source{
+				{
+					Type: "ETW",
+					Providers: []EtwProvider{
+						{
+							ProviderName: "SomeProvider",
+							ProviderGUID: "not-a-valid-guid",
+						},
+					},
+				},
+			},
+		},
+	}
+	invalidGUIDBase64 := mustEncodeLogSources(t, invalidGUIDConfig)
+
+	// Build a config with an invalid GUID but no provider name (only GUID set),
+	// to trigger the resolveGUIDsWithLookup path specifically.
+	invalidGUIDOnlyConfig := LogSourcesInfo{
+		LogConfig: LogConfig{
+			Sources: []Source{
+				{
+					Type: "ETW",
+					Providers: []EtwProvider{
+						{
+							ProviderGUID: "zzz-invalid",
+						},
+					},
+				},
+			},
+		},
+	}
+	invalidGUIDOnlyBase64 := mustEncodeLogSources(t, invalidGUIDOnlyConfig)
+
+	tests := []struct {
+		name         string
+		base64Input  string
+		useDefault   bool
+		includeGUIDs bool
+		errContains  string
+	}{
+		{
+			name:         "invalid_base64_input",
+			base64Input:  "not-valid-base64!@#$",
+			useDefault:   false,
+			includeGUIDs: false,
+			errContains:  "failed to decode and unmarshal user log sources",
+		},
+		{
+			name:         "valid_base64_invalid_json",
+			base64Input:  base64.StdEncoding.EncodeToString([]byte("{{not json}}")),
+			useDefault:   false,
+			includeGUIDs: false,
+			errContains:  "failed to decode and unmarshal user log sources",
+		},
+		{
+			name:         "invalid_base64_with_defaults",
+			base64Input:  "!!!bad-base64!!!",
+			useDefault:   true,
+			includeGUIDs: false,
+			errContains:  "failed to decode and unmarshal user log sources",
+		},
+		{
+			name:         "invalid_base64_with_defaults_and_guids",
+			base64Input:  "???",
+			useDefault:   true,
+			includeGUIDs: true,
+			errContains:  "failed to decode and unmarshal user log sources",
+		},
+		{
+			name:         "valid_base64_malformed_json_structure",
+			base64Input:  base64.StdEncoding.EncodeToString([]byte(`{"LogConfig": {"sources": "not_an_array"}}`)),
+			useDefault:   false,
+			includeGUIDs: false,
+			errContains:  "failed to decode and unmarshal user log sources",
+		},
+		{
+			name:         "invalid_guid_with_includeGUIDs_resolveGUIDsWithLookup",
+			base64Input:  invalidGUIDBase64,
+			useDefault:   false,
+			includeGUIDs: true,
+			errContains:  "failed to apply GUID policy",
+		},
+		{
+			name:         "invalid_guid_without_includeGUIDs_stripRedundantGUIDs",
+			base64Input:  invalidGUIDBase64,
+			useDefault:   false,
+			includeGUIDs: false,
+			errContains:  "failed to apply GUID policy",
+		},
+		{
+			name:         "invalid_guid_only_no_name_with_includeGUIDs",
+			base64Input:  invalidGUIDOnlyBase64,
+			useDefault:   false,
+			includeGUIDs: true,
+			errContains:  "failed to apply GUID policy",
+		},
+		{
+			name:         "invalid_guid_with_defaults_and_includeGUIDs",
+			base64Input:  invalidGUIDBase64,
+			useDefault:   true,
+			includeGUIDs: true,
+			errContains:  "failed to apply GUID policy",
+		},
+		{
+			name:         "invalid_guid_with_defaults_without_includeGUIDs",
+			base64Input:  invalidGUIDBase64,
+			useDefault:   true,
+			includeGUIDs: false,
+			errContains:  "failed to apply GUID policy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLogSourcesInfo = cloneLogSourcesInfo(originalDefaults)
+
+			got, err := UpdateLogSources(tt.base64Input, tt.useDefault, tt.includeGUIDs)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil (result: %q)", tt.errContains, got)
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Fatalf("expected error containing %q, got: %v", tt.errContains, err)
+			}
+			if got != "" {
+				t.Fatalf("expected empty result on error, got %q", got)
+			}
+		})
+	}
+}
+
+func TestUpdateLogSources_ReturnsLowercaseProviderFields(t *testing.T) {
+    // Mixed-case input on purpose.
+    userCfg := LogSourcesInfo{
+        LogConfig: LogConfig{
+            Sources: []Source{
+                {
+                    Type: "ETW",
+                    Providers: []EtwProvider{
+                        {
+                            ProviderName: "Microsoft.Windows.HyperV.Compute",
+                        },
+                        {
+                            ProviderName: "Some.Mixed.Case.Provider",
+                            ProviderGUID: "{6F9619FF-8B86-D011-B42D-00C04FC964FF}",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    encoded := mustEncodeLogSources(t, userCfg)
+
+    // useDefaultLogSources=false keeps assertion focused on this input only.
+    got, err := UpdateLogSources(encoded, false, true)
+    if err != nil {
+        t.Fatalf("UpdateLogSources returned unexpected error: %v", err)
+    }
+
+    decoded := mustDecodeLogSources(t, got)
+
+    for si, src := range decoded.LogConfig.Sources {
+        for pi, p := range src.Providers {
+            if p.ProviderName != "" && p.ProviderName != strings.ToLower(p.ProviderName) {
+                t.Fatalf("providerName is not lowercase at source[%d].providers[%d]: %q", si, pi, p.ProviderName)
+            }
+            if p.ProviderGUID != "" && p.ProviderGUID != strings.ToLower(p.ProviderGUID) {
+                t.Fatalf("providerGuid is not lowercase at source[%d].providers[%d]: %q", si, pi, p.ProviderGUID)
+            }
+        }
+    }
 }
